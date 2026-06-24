@@ -23,7 +23,11 @@ from .builder import AgentBuilder
 from .envelope import Envelope
 from .executor import AgentExecutor
 from .hooks import HookAction, HookContext
-from .message_convert import _get_last_user_text, _request_input_to_msgs
+from .message_convert import (
+    _get_last_user_text,
+    _prepend_current_time_to_user_messages,
+    _request_input_to_msgs,
+)
 from .phases import Phase
 
 logger = logging.getLogger(__name__)
@@ -117,6 +121,7 @@ class Runtime:
 
             if not skip_agent:
                 # --- [fixed 3] execute agent ---
+                _prepend_current_time_to_user_messages(ctx.input_msgs)
                 async for ev in envelope.emit_response_created():
                     yield ev
                 executor = AgentExecutor(ctx.agent, envelope)

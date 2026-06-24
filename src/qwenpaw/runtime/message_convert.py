@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import logging
 import mimetypes
-from typing import Any, List
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, List
 from urllib.parse import unquote, urlparse
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from ..config import load_config
 
 logger = logging.getLogger(__name__)
+
+_CURRENT_TIME_PREFIX = "Current time:"
 
 
 def _media_type_to_block_type(media_type: str | None) -> str:
@@ -47,6 +53,92 @@ def _ensure_url_scheme(url: str) -> str:
         resolved = str(Path(unquote(url)).expanduser().resolve())
         return "file://" + resolved
     return url
+
+
+def _current_user_time_line() -> str:
+    user_tz = load_config().user_timezone or "UTC"
+    try:
+        now = datetime.now(ZoneInfo(user_tz))
+    except (ZoneInfoNotFoundError, KeyError):
+        logger.warning("Invalid timezone %r, falling back to UTC", user_tz)
+        now = datetime.now(timezone.utc)
+        user_tz = "UTC"
+    return (
+        f"{_CURRENT_TIME_PREFIX} {now.strftime('%Y-%m-%d %H:%M:%S')} "
+        f"{user_tz} ({now.strftime('%A')})"
+    )
+
+
+def _block_type(block: Any) -> str | None:
+    if isinstance(block, dict):
+        btype = block.get("type")
+    else:
+        btype = getattr(block, "type", None)
+    if hasattr(btype, "value"):
+        btype = btype.value
+    return btype
+
+
+def _block_text(block: Any) -> str:
+    if isinstance(block, dict):
+        return str(block.get("text") or "")
+    return str(getattr(block, "text", None) or "")
+
+
+def _set_block_text(block: Any, text: str) -> None:
+    if isinstance(block, dict):
+        block["text"] = text
+        return
+    setattr(block, "text", text)
+
+
+def _prepend_time_to_text(text: str, timestamp_line: str) -> str:
+    if text.startswith(_CURRENT_TIME_PREFIX):
+        return text
+    if text.lstrip().startswith("/"):
+        return text
+    if not text:
+        return timestamp_line
+    return f"{timestamp_line}\n{text}"
+
+
+def _prepend_current_time_to_user_messages(msgs: List[Any]) -> None:
+    """Prepend fresh current time context to model-facing user messages."""
+    timestamp_line: str | None = None
+
+    for msg in msgs:
+        role = getattr(msg, "role", None)
+        if hasattr(role, "value"):
+            role = role.value
+        if role != "user":
+            continue
+
+        if timestamp_line is None:
+            timestamp_line = _current_user_time_line()
+
+        content = getattr(msg, "content", None)
+        if isinstance(content, str):
+            msg.content = _prepend_time_to_text(content, timestamp_line)
+            continue
+
+        try:
+            from agentscope.message import TextBlock
+        except Exception:
+            logger.debug("Failed to import TextBlock for time prefix")
+            continue
+
+        if not isinstance(content, list):
+            msg.content = [TextBlock(type="text", text=timestamp_line)]
+            continue
+
+        for block in content:
+            if _block_type(block) != "text":
+                continue
+            text = _block_text(block)
+            _set_block_text(block, _prepend_time_to_text(text, timestamp_line))
+            break
+        else:
+            content.insert(0, TextBlock(type="text", text=timestamp_line))
 
 
 # pylint: disable=too-many-branches

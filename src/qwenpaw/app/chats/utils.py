@@ -91,13 +91,6 @@ def build_env_context(
         Formatted environment context string
     """
     parts = []
-    user_tz = load_config().user_timezone or "UTC"
-    try:
-        now = datetime.now(ZoneInfo(user_tz))
-    except (ZoneInfoNotFoundError, KeyError):
-        logger.warning("Invalid timezone %r, falling back to UTC", user_tz)
-        now = datetime.now(timezone.utc)
-        user_tz = "UTC"
 
     if session_id is not None:
         parts.append(f"- Session ID: {session_id}")
@@ -128,10 +121,6 @@ def build_env_context(
             )
     elif working_dir is not None:
         parts.append(f"- Working directory: {working_dir}")
-    parts.append(
-        f"- Current date: {now.strftime('%Y-%m-%d')} "
-        f"{user_tz} ({now.strftime('%A')})",
-    )
 
     if add_hint:
         parts.append(
