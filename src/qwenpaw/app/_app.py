@@ -203,6 +203,22 @@ async def lifespan(  # pylint: disable=too-many-statements,too-many-branches
     migrate_legacy_skills_to_skill_pool()
     ensure_qa_agent_exists()
 
+    # Migrate old conversations from sessions/*.json into each scroll agent's
+    # history.db, so chats from before scroll existed stay recallable. This is
+    # a one-off backfill, not core startup work: if it fails, we log and keep
+    # booting — that agent just won't have its old chats imported (scroll still
+    # records new turns normally). The import sits inside the try for the same
+    # reason — even a failed import must not block init.
+    #
+    # Note: being pure backfill, this could later run asynchronously (off the
+    # boot path) to speed up startup.
+    try:
+        from ..agents.context.scroll.sync import sync_all_scroll_agents
+
+        sync_all_scroll_agents()
+    except Exception:  # noqa: BLE001 - session sync must never block startup
+        logger.warning("session-sync: import/launch failed", exc_info=True)
+
     # Create core managers (instant — no I/O)
     provider_manager = ProviderManager.get_instance()
     local_model_manager = LocalModelManager.get_instance()
