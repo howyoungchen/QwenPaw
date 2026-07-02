@@ -93,6 +93,13 @@ class _PollingReconnectRequested(Exception):
         self.delay = delay
 
 
+def _telegram_base_urls(base_url: str) -> tuple[str, str]:
+    root = (base_url or "").strip().rstrip("/")
+    if not root:
+        return "", ""
+    return f"{root}/bot", f"{root}/file/bot"
+
+
 async def _download_telegram_file(
     *,
     bot: Any,
@@ -134,6 +141,7 @@ async def _resolve_telegram_file_url(
     bot: Any,
     file_id: str,
     bot_token: str,
+    base_url: str = "",
 ) -> str:
     """Resolve the remote URL for a Telegram file.
 
@@ -152,7 +160,9 @@ async def _resolve_telegram_file_url(
         return ""
     if file_path.startswith("http"):
         return file_path
-    return f"https://api.telegram.org/file/bot{bot_token}/{file_path}"
+    _, base_file_url = _telegram_base_urls(base_url)
+    base_file_url = base_file_url or "https://api.telegram.org/file/bot"
+    return f"{base_file_url}{bot_token}/{file_path}"
 
 
 async def _build_content_parts_from_message(
@@ -300,6 +310,7 @@ class TelegramChannel(BaseChannel):
         workspace_dir: Path | None = None,
         show_typing: bool = True,
         filter_tool_messages: bool = False,
+        no_text_debounce: bool = True,
         filter_thinking: bool = False,
         dm_policy: str = "open",
         group_policy: str = "open",
@@ -309,12 +320,14 @@ class TelegramChannel(BaseChannel):
         streaming_enabled: bool = False,
         access_control_dm: bool = False,
         access_control_group: bool = False,
+        base_url: str = "",
     ):
         super().__init__(
             process,
             on_reply_sent=on_reply_sent,
             show_tool_details=show_tool_details,
             filter_tool_messages=filter_tool_messages,
+            no_text_debounce=no_text_debounce,
             filter_thinking=filter_thinking,
             dm_policy=dm_policy,
             group_policy=group_policy,
@@ -327,6 +340,7 @@ class TelegramChannel(BaseChannel):
         )
         self.enabled = enabled
         self._bot_token = bot_token
+        self._base_url = (base_url or "").strip().rstrip("/")
         self._http_proxy = http_proxy or ""
         self._http_proxy_auth = http_proxy_auth or ""
         self.bot_prefix = bot_prefix
@@ -395,6 +409,9 @@ class TelegramChannel(BaseChannel):
             return self._http_proxy
 
         builder = Application.builder().token(self._bot_token)
+        base_url, base_file_url = _telegram_base_urls(self._base_url)
+        if base_url:
+            builder = builder.base_url(base_url).base_file_url(base_file_url)
         builder = builder.get_updates_read_timeout(20)
         builder = builder.get_updates_connect_timeout(10)
         proxy = proxy_url()
@@ -470,22 +487,6 @@ class TelegramChannel(BaseChannel):
 
         app.add_handler(CallbackQueryHandler(handle_callback_query))
         return app
-
-    def _apply_no_text_debounce(
-        self,
-        session_id: str,
-        content_parts: list[Any],
-    ) -> tuple[bool, list[Any]]:
-        """Process media-only Telegram messages without waiting for text."""
-        has_media = any(
-            getattr(part, "type", None)
-            not in (ContentType.TEXT, ContentType.REFUSAL)
-            for part in content_parts
-        )
-        if has_media:
-            pending = self._pending_content_by_session.pop(session_id, [])
-            return True, pending + list(content_parts)
-        return super()._apply_no_text_debounce(session_id, content_parts)
 
     @staticmethod
     def _looks_like_polling_conflict(error: Exception) -> bool:
@@ -582,6 +583,7 @@ class TelegramChannel(BaseChannel):
             process=process,
             enabled=os.getenv("TELEGRAM_CHANNEL_ENABLED", "0") == "1",
             bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
+            base_url=os.getenv("TELEGRAM_BASE_URL", ""),
             http_proxy=os.getenv("TELEGRAM_HTTP_PROXY", ""),
             http_proxy_auth=os.getenv("TELEGRAM_HTTP_PROXY_AUTH", ""),
             bot_prefix=os.getenv("TELEGRAM_BOT_PREFIX", ""),
@@ -602,6 +604,7 @@ class TelegramChannel(BaseChannel):
         on_reply_sent: OnReplySent = None,
         show_tool_details: bool = True,
         filter_tool_messages: bool = False,
+        no_text_debounce: bool = True,
         filter_thinking: bool = False,
         workspace_dir: Path | None = None,
     ) -> "TelegramChannel":
@@ -621,12 +624,14 @@ class TelegramChannel(BaseChannel):
             process=process,
             enabled=bool(c.get("enabled", False)),
             bot_token=_get_str("bot_token"),
+            base_url=_get_str("base_url"),
             http_proxy=_get_str("http_proxy"),
             http_proxy_auth=_get_str("http_proxy_auth"),
             bot_prefix=_get_str("bot_prefix"),
             on_reply_sent=on_reply_sent,
             show_tool_details=show_tool_details,
             filter_tool_messages=filter_tool_messages,
+            no_text_debounce=no_text_debounce,
             filter_thinking=filter_thinking,
             workspace_dir=workspace_dir,
             show_typing=show_typing,
@@ -1111,18 +1116,6 @@ class TelegramChannel(BaseChannel):
             # use the normal chunked send path (same as non-streaming).
             await self._delete_message(chat_id, msg_id)
             await self.send(to_handle, final_text, send_meta)
-
-        # Card events (e.g. tool_guard) consumed by streaming need a
-        # compact interactive card sent after the streaming card.
-        if stream_type == "message" and self._card_handler.is_card_event(
-            event,
-        ):
-            await self._card_handler.try_send_card_for_event(
-                to_handle,
-                event,
-                send_meta,
-                compact=True,
-            )
 
     # ------------------------------------------------------------------
     # Event hooks

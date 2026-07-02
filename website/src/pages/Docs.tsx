@@ -166,9 +166,9 @@ const DOC_GROUPS: DocGroup[] = [
     titleKey: "docs.groupControl",
     children: [
       { slug: "console", titleKey: "docs.console" },
+      { slug: "tui", titleKey: "docs.tui" },
       { slug: "channels", titleKey: "docs.channels" },
       { slug: "commands", titleKey: "docs.commands" },
-      { slug: "plan", titleKey: "docs.plan" },
       { slug: "cron", titleKey: "docs.cron" },
       { slug: "heartbeat", titleKey: "docs.heartbeat" },
       { slug: "memory", titleKey: "docs.memory" },
@@ -209,6 +209,7 @@ const DOC_GROUPS: DocGroup[] = [
   {
     titleKey: "docs.groupOthers",
     children: [
+      { slug: "architecture", titleKey: "docs.architecture" },
       { slug: "faq", titleKey: "docs.faq" },
       { slug: "api-tutorial", titleKey: "docs.apiTutorial" },
       { slug: "acp-integration", titleKey: "docs.acpServer" },

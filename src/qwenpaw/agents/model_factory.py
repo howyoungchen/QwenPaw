@@ -671,9 +671,7 @@ def _fixup_media_list(items: list) -> None:
             source = getattr(block, "source", None)
             url_str = str(getattr(source, "url", "")) if source else ""
             if url_str.startswith("file://"):
-                local_path = unquote(
-                    url_str.removeprefix("file://"),
-                )
+                local_path = _file_url_to_path(url_str)
                 if not os.path.exists(local_path):
                     mt = getattr(source, "media_type", "") or ""
                     media_name = mt.split("/")[0] or "media"
@@ -690,7 +688,7 @@ def _fixup_media_list(items: list) -> None:
                         ),
                     )
                 elif unquote(url_str) != url_str:
-                    source.url = "file://" + local_path
+                    source.url = unquote(url_str)
         elif btype == "file":
             if isinstance(block, dict):
                 source = block.get("source") or {}
@@ -1088,6 +1086,7 @@ def create_model_and_formatter(
     model_slot = None
     retry_config = None
     rate_limit_config = None
+    compact_threshold: Optional[float] = None
     if agent_id:
         try:
             agent_config = load_agent_config(agent_id)
@@ -1105,6 +1104,12 @@ def create_model_and_formatter(
                 jitter_range=agent_config.running.llm_rate_limit_jitter,
                 acquire_timeout=agent_config.running.llm_acquire_timeout,
             )
+            # Surface the auto-compaction threshold so the UI can mark where
+            # context starts getting evicted — only when compaction is on.
+            lcc = agent_config.running.light_context_config
+            ccc = lcc.context_compact_config
+            if getattr(ccc, "enabled", False):
+                compact_threshold = ccc.compact_threshold_ratio
         except Exception:
             pass
 
@@ -1150,7 +1155,11 @@ def create_model_and_formatter(
         model.max_retries = 0
 
     # Wrap with retry logic for transient LLM API errors
-    wrapped_model = TokenRecordingModelWrapper(provider_id, model)
+    wrapped_model = TokenRecordingModelWrapper(
+        provider_id,
+        model,
+        compact_threshold=compact_threshold,
+    )
     wrapped_model = RetryChatModel(
         wrapped_model,
         retry_config=retry_config,

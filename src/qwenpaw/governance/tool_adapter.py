@@ -59,6 +59,47 @@ def _is_execution_level_off() -> bool:
         return False
 
 
+def _resolve_effective_approval_level(
+    request_context: dict[str, str] | None,
+) -> Optional[Any]:
+    """Resolve the effective approval_level for this tool call.
+
+    Priority:
+      1. ``request_context["approval_level"]`` — session-level override
+         injected by the frontend (localStorage per chat, carried in each
+         request). Zero I/O: already in memory.
+      2. ``agent.json`` → ``AgentProfileConfig.approval_level`` — the
+         agent-level default set via the Web UI 'Tool Execution Security' card.
+      3. ``None`` — unresolvable (caller falls back to AUTO).
+
+    Returns the :class:`ToolExecutionLevel` enum, or ``None``.
+    """
+    if not request_context:
+        return None
+
+    from ..security.tool_guard.execution_level import ToolExecutionLevel
+
+    # Session-level override (injected by frontend per request)
+    session_raw = request_context.get("approval_level")
+    if session_raw:
+        level = ToolExecutionLevel.from_config(session_raw)
+        if level is not None:
+            return level
+
+    # Agent-level default from agent.json
+    agent_id = request_context.get("agent_id", "")
+    if not agent_id:
+        return None
+    try:
+        from ..config.config import load_agent_config
+
+        profile = load_agent_config(agent_id)
+        raw = getattr(profile, "approval_level", None)
+        return ToolExecutionLevel.from_config(raw)
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # PolicyGuardedTool
 # ---------------------------------------------------------------------------
@@ -159,6 +200,21 @@ async def _policy_tool_check_permissions(
     del context
 
     governor = getattr(self, "_qp_governor", None)
+
+    # ── Effective approval_level check (session > agent) ──
+    request_ctx = getattr(self, "_qp_request_context", None) or {}
+    effective_level = _resolve_effective_approval_level(request_ctx)
+    if effective_level is not None and effective_level.is_disabled():
+        return PermissionDecision(
+            behavior=PermissionBehavior.ALLOW,
+            message="governance: approval_level=off, all tools allowed.",
+        )
+
+    # Sync effective approval_level to the governor's policy
+    # so the three-phase evaluation uses the correct threshold.
+    if governor is not None and effective_level is not None:
+        governor.policy.execution_level = effective_level.value
+
     if governor is None:
         # Check if execution_level is "off" (dev mode) — allow pass-through
         if _is_execution_level_off():
@@ -324,9 +380,11 @@ async def _policy_tool_call(
         tc_spec,
         GovernanceDecision(
             action=GovernanceAction.ASK,
-            reason=f"sandbox violation: {violation_msg}"
-            if violation_msg
-            else "sandbox violation, ask user",
+            reason=(
+                f"sandbox violation: {violation_msg}"
+                if violation_msg
+                else "sandbox violation, ask user"
+            ),
         ),
     )
 
@@ -533,6 +591,8 @@ async def _ask_user_approval(
                 "tool_name": tool_name,
                 "tool_source": source,
             },
+            "channel_meta": ctx.get("channel_meta"),
+            "_channel_instance": ctx.get("_channel_instance"),
         },
     )
 
